@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ytDownloader</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <h1>YouTube動画ダウンローダー</h1>
+      <p>動画のURLを入力して、ダウンロードを開始します。</p>
+
+      <form id="download-form">
+        <input id="video-url" type="url" placeholder="https://www.youtube.com/watch?v=..." required />
+        <button id="probe-btn" type="submit">フォーマット取得</button>
+      </form>
+
+      <div id="probe-area" style="display:none; margin-top:1rem;">
+        <div id="video-meta">
+          <img id="thumbnail" src="" alt="thumbnail" style="max-width:180px; display:none; border-radius:8px;" />
+          <div id="video-title" style="margin-top:0.5rem; font-weight:600;"></div>
+        </div>
+        <label for="format-select">フォーマットを選択:</label>
+        <select id="format-select" style="width:100%; margin-top:0.5rem;"></select>
+        <button id="download-btn" style="margin-top:0.5rem;">ダウンロード開始</button>
+      </div>
+
+      <div id="status" class="status">待機中</div>
+      <div id="progress" style="margin-top:0.5rem; display:none;">
+        <progress id="progress-bar" value="0" max="100" style="width:100%;"></progress>
+        <div id="progress-text" style="margin-top:0.5rem;"></div>
+        <button id="cancel-btn" type="button" disabled style="margin-top:0.5rem;">キャンセル</button>
+      </div>
+
+      <div id="result" class="result"></div>
+
+      <section id="history-section" style="margin-top:2rem;">
+        <h2 style="font-size:1rem;">ダウンロード履歴</h2>
+        <ul id="history-list" class="history-list"></ul>
+      </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

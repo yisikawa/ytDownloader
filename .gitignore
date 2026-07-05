@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual environments
+.venv/
+backend/.venv/
+
+# Downloaded media (runtime output, not source)
+backend/downloads/*
+!backend/downloads/.gitkeep

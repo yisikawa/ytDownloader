@@ -6,6 +6,7 @@ const probeArea = document.getElementById('probe-area');
 const thumbnail = document.getElementById('thumbnail');
 const videoTitle = document.getElementById('video-title');
 const formatSelect = document.getElementById('format-select');
+const downloadDirInput = document.getElementById('download-dir');
 const downloadBtn = document.getElementById('download-btn');
 const progressDiv = document.getElementById('progress');
 const progressBar = document.getElementById('progress-bar');
@@ -43,11 +44,20 @@ form.addEventListener('submit', async (event) => {
     formatSelect.innerHTML = '';
     const seen = new Set();
     data.formats.forEach(f => {
-      const label = `${f.format_id} — ${f.ext} — ${f.resolution || ''} — ${f.format_note || ''}`;
+      // YouTube's higher-quality formats ship video and audio as separate
+      // streams; a video-only format must be merged with an audio stream or
+      // the resulting file has no sound.
+      const needsAudio = f.has_video && !f.has_audio;
+      const label = `${f.format_id} — ${f.ext} — ${f.resolution || ''} — ${f.format_note || ''}` +
+        (needsAudio ? ' (音声を自動合成)' : '');
       if (!seen.has(f.format_id)) {
         const opt = document.createElement('option');
-        opt.value = f.format_id;
+        opt.value = needsAudio ? `${f.format_id}+bestaudio` : f.format_id;
         opt.textContent = label;
+        // Forces the merged output into the same container shown in the label
+        // (e.g. "mp4"), instead of yt-dlp's own choice of best-fitting container
+        // for the codec combination, which can differ (e.g. webm/mkv).
+        opt.dataset.ext = f.ext;
         formatSelect.appendChild(opt);
         seen.add(f.format_id);
       }
@@ -63,6 +73,9 @@ form.addEventListener('submit', async (event) => {
 downloadBtn.addEventListener('click', async () => {
   const url = urlInput.value.trim();
   const format_id = formatSelect.value || null;
+  const download_dir = downloadDirInput.value.trim() || null;
+  const selectedOption = formatSelect.selectedOptions[0];
+  const merge_output_format = (selectedOption && selectedOption.dataset.ext) || null;
   status.textContent = 'ダウンロードを開始します...';
   result.innerHTML = '';
 
@@ -70,7 +83,7 @@ downloadBtn.addEventListener('click', async () => {
     const res = await fetch('/api/download', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url, format_id }),
+      body: JSON.stringify({ url, format_id, download_dir, merge_output_format }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || '開始に失敗しました');
@@ -119,12 +132,9 @@ async function pollStatus(taskId) {
       progressBar.value = 100;
       progressText.textContent = '100%';
       cancelBtn.disabled = true;
-      const filename = data.filename || data.fileName;
-      if (data.thumbnail) {
-        thumbnail.src = `/api/files/${data.thumbnail}`;
-        thumbnail.style.display = 'block';
-      }
-      result.innerHTML = `<p><strong>${data.title || ''}</strong></p><a href="/api/files/${filename}" target="_blank" rel="noopener noreferrer">ファイルを開く</a>`;
+      result.innerHTML = `<p><strong>${data.title || ''}</strong></p>` +
+        `<p>保存先: ${data.download_dir || ''}</p>` +
+        `<a href="/api/files/task/${taskId}" target="_blank" rel="noopener noreferrer">ファイルを開く</a>`;
       loadHistory();
       return;
     } else if (data.status === 'canceled') {
@@ -156,8 +166,9 @@ async function loadHistory() {
     historyList.innerHTML = '';
     data.forEach(entry => {
       const li = document.createElement('li');
-      if (entry.status === 'completed' && entry.filename) {
-        li.innerHTML = `<a href="/api/files/${entry.filename}" target="_blank" rel="noopener noreferrer">${entry.title || entry.filename}</a>`;
+      if (entry.status === 'completed' && entry.file_path) {
+        const dir = entry.download_dir ? ` (${entry.download_dir})` : '';
+        li.innerHTML = `<a href="/api/files/task/${entry.task_id}" target="_blank" rel="noopener noreferrer">${entry.title || entry.filename}</a>${dir}`;
       } else if (entry.status === 'error') {
         li.textContent = `${entry.url} — エラー: ${entry.error || '不明'}`;
       } else {

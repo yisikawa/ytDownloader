@@ -4,7 +4,6 @@ import uuid
 from pathlib import Path
 from typing import Dict, List, Optional
 
-import httpx
 import yt_dlp
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -26,8 +25,27 @@ class TooManyDownloadsError(Exception):
     pass
 
 
+class InvalidDownloadDirError(Exception):
+    pass
+
+
 class DownloadCancelledByUser(Exception):
     pass
+
+
+def _resolve_download_dir(download_dir: Optional[str]) -> Path:
+    if not download_dir or not download_dir.strip():
+        return DOWNLOAD_DIR
+
+    try:
+        target = Path(download_dir.strip()).expanduser().resolve()
+        target.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise InvalidDownloadDirError(f"Invalid download folder: {exc}") from exc
+
+    if not target.is_dir():
+        raise InvalidDownloadDirError("Download folder path is not a directory")
+    return target
 
 
 def _cleanup_stale_tasks() -> None:
@@ -49,7 +67,13 @@ def _active_download_count() -> int:
         return sum(1 for status in DOWNLOADS.values() if status.get("status") in ACTIVE_STATUSES)
 
 
-def _download_worker(task_id: str, url: str, format_id: Optional[str]) -> None:
+def _download_worker(
+    task_id: str,
+    url: str,
+    format_id: Optional[str],
+    output_dir: Path,
+    merge_output_format: Optional[str],
+) -> None:
     cancel_event = _cancel_events[task_id]
 
     def progress_hook(d):
@@ -66,43 +90,44 @@ def _download_worker(task_id: str, url: str, format_id: Optional[str]) -> None:
                 status["filename"] = Path(d.get("filename", "")).name
 
     ydl_opts = {
-        "outtmpl": str(DOWNLOAD_DIR / "%(id)s.%(ext)s"),
+        # Use the video title (truncated to avoid Windows path-length issues) as the
+        # filename. Note: same-titled videos, or the same video in a different
+        # format, will overwrite an existing file with the same title.
+        "outtmpl": str(output_dir / "%(title).150B.%(ext)s"),
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
-        "restrictfilenames": True,
+        # Not using restrictfilenames: it forces ASCII-only names, which would
+        # mangle non-Latin (e.g. Japanese) video titles.
+        "restrictfilenames": False,
         "progress_hooks": [progress_hook],
         "format": format_id or "bestvideo+bestaudio/best",
     }
+    if merge_output_format:
+        # Forces the merged file into the container the user actually picked
+        # (e.g. the format list said "mp4"), instead of yt-dlp's own choice of
+        # whatever container best fits the codec combination (e.g. webm/mkv).
+        ydl_opts["merge_output_format"] = merge_output_format
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
-            vid = info.get("id")
-            thumb = info.get("thumbnail")
-            thumb_name = None
-            if thumb:
-                try:
-                    r = httpx.get(thumb, timeout=10.0)
-                    if r.status_code == 200:
-                        thumb_path = DOWNLOAD_DIR / f"{vid}.jpg"
-                        thumb_path.write_bytes(r.content)
-                        thumb_name = thumb_path.name
-                except Exception:
-                    pass
 
-            filename = None
-            for p in DOWNLOAD_DIR.glob(f"{vid}.*"):
-                if p.suffix != ".jpg":
-                    filename = p.name
+            # Determine the actual final output path from yt-dlp itself rather than
+            # globbing the directory: a glob can't distinguish this task's output
+            # from a leftover file of a prior download of the same video ID (e.g.
+            # a different format/container), and could report the wrong file.
+            requested = info.get("requested_downloads") or []
+            file_path = None
+            if requested and requested[-1].get("filepath"):
+                file_path = Path(requested[-1]["filepath"])
 
             with _lock:
                 status = DOWNLOADS[task_id]
                 status["status"] = "completed"
                 status["title"] = info.get("title")
-                status["filename"] = filename
-                if thumb_name:
-                    status["thumbnail"] = thumb_name
+                status["filename"] = file_path.name if file_path else None
+                status["file_path"] = str(file_path) if file_path else None
                 status["finished_at"] = time.monotonic()
     except DownloadCancelledByUser:
         with _lock:
@@ -119,7 +144,12 @@ def _download_worker(task_id: str, url: str, format_id: Optional[str]) -> None:
         _cancel_events.pop(task_id, None)
 
 
-def start_download(url: str, format_id: Optional[str]) -> str:
+def start_download(
+    url: str,
+    format_id: Optional[str],
+    download_dir: Optional[str] = None,
+    merge_output_format: Optional[str] = None,
+) -> str:
     _cleanup_stale_tasks()
 
     if _active_download_count() >= MAX_CONCURRENT_DOWNLOADS:
@@ -127,16 +157,23 @@ def start_download(url: str, format_id: Optional[str]) -> str:
             f"Too many concurrent downloads (max {MAX_CONCURRENT_DOWNLOADS}). Please try again later."
         )
 
+    output_dir = _resolve_download_dir(download_dir)
+
     task_id = str(uuid.uuid4())
     with _lock:
         DOWNLOADS[task_id] = {
             "status": "queued",
             "url": url,
+            "download_dir": str(output_dir),
             "created_at": time.monotonic(),
         }
         _cancel_events[task_id] = threading.Event()
 
-    thread = threading.Thread(target=_download_worker, args=(task_id, url, format_id), daemon=True)
+    thread = threading.Thread(
+        target=_download_worker,
+        args=(task_id, url, format_id, output_dir, merge_output_format),
+        daemon=True,
+    )
     thread.start()
     return task_id
 

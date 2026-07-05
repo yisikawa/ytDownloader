@@ -1,4 +1,5 @@
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -38,6 +39,29 @@ class MainApplicationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 500)
         self.assertIn("boom", response.json()["detail"])
 
+    def test_probe_flags_video_only_formats_and_drops_storyboards(self) -> None:
+        fake_info = {
+            "id": "abc",
+            "title": "Test Video",
+            "thumbnail": None,
+            "formats": [
+                {"format_id": "137", "ext": "mp4", "vcodec": "avc1", "acodec": "none"},
+                {"format_id": "140", "ext": "m4a", "vcodec": "none", "acodec": "mp4a"},
+                {"format_id": "18", "ext": "mp4", "vcodec": "avc1", "acodec": "mp4a"},
+                {"format_id": "sb0", "ext": "mhtml", "vcodec": "none", "acodec": "none"},
+            ],
+        }
+        with patch("app.routes.yt_dlp.YoutubeDL") as mock_ydl:
+            mock_ydl.return_value.__enter__.return_value.extract_info.return_value = fake_info
+            response = self.client.post("/api/probe", json={"url": "https://example.com/watch?v=abc"})
+
+        self.assertEqual(response.status_code, 200)
+        formats = {f["format_id"]: f for f in response.json()["formats"]}
+        self.assertNotIn("sb0", formats)
+        self.assertEqual(formats["137"], {**formats["137"], "has_video": True, "has_audio": False})
+        self.assertEqual(formats["140"], {**formats["140"], "has_video": False, "has_audio": True})
+        self.assertEqual(formats["18"], {**formats["18"], "has_video": True, "has_audio": True})
+
     def test_status_unknown_task_returns_404(self) -> None:
         response = self.client.get("/api/status/does-not-exist")
         self.assertEqual(response.status_code, 404)
@@ -72,6 +96,34 @@ class MainApplicationTests(unittest.TestCase):
 
         with self.assertRaises(downloads.TooManyDownloadsError):
             downloads.start_download("https://example.com/watch?v=abc", None)
+
+    def test_download_rejects_invalid_download_dir(self) -> None:
+        with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+            # Point download_dir at a path that already exists as a *file*,
+            # so mkdir(parents=True, exist_ok=True) must fail.
+            not_a_dir = tmp_file.name
+
+        try:
+            response = self.client.post(
+                "/api/download",
+                json={"url": "https://example.com/watch?v=abc", "download_dir": not_a_dir},
+            )
+            self.assertEqual(response.status_code, 400)
+        finally:
+            Path(not_a_dir).unlink(missing_ok=True)
+
+    def test_start_download_records_custom_download_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            custom_dir = str(Path(tmp_dir) / "nested" / "output")
+            task_id = downloads.start_download("https://example.com/watch?v=abc", None, custom_dir)
+            status = downloads.get_status(task_id)
+            self.assertEqual(status["download_dir"], str(Path(custom_dir).resolve()))
+            self.assertTrue(Path(custom_dir).is_dir())
+            downloads.cancel_download(task_id)
+
+    def test_serve_task_file_unknown_task_returns_404(self) -> None:
+        response = self.client.get("/api/files/task/does-not-exist")
+        self.assertEqual(response.status_code, 404)
 
     def test_serve_file_rejects_path_traversal(self) -> None:
         # Backslash-escaped traversal reaches our handler and must be rejected explicitly.

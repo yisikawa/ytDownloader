@@ -18,6 +18,22 @@ from .schemas import DownloadRequest, ProbeRequest
 router = APIRouter()
 
 
+def _collect_subtitles(info: dict) -> list:
+    subtitles = []
+    seen_langs = set()
+    for lang, entries in (info.get("subtitles") or {}).items():
+        name = entries[0].get("name") if entries else None
+        subtitles.append({"lang": lang, "name": name or lang, "auto": False})
+        seen_langs.add(lang)
+    for lang, entries in (info.get("automatic_captions") or {}).items():
+        if lang in seen_langs:
+            # already offered as a manually-uploaded subtitle in this language
+            continue
+        name = entries[0].get("name") if entries else None
+        subtitles.append({"lang": lang, "name": name or lang, "auto": True})
+    return subtitles
+
+
 @router.get("/api/health")
 def health() -> dict:
     return {"status": "ok"}
@@ -60,9 +76,16 @@ def probe(payload: ProbeRequest):
             "tbr": f.get("tbr"),
             "has_video": vcodec != "none",
             "has_audio": acodec != "none",
+            "language": f.get("language"),
         })
 
-    return {"id": info.get("id"), "title": info.get("title"), "thumbnail": info.get("thumbnail"), "formats": formats}
+    return {
+        "id": info.get("id"),
+        "title": info.get("title"),
+        "thumbnail": info.get("thumbnail"),
+        "formats": formats,
+        "subtitles": _collect_subtitles(info),
+    }
 
 
 @router.post("/api/download")
@@ -72,7 +95,12 @@ def download_video(payload: DownloadRequest):
 
     try:
         task_id = start_download(
-            payload.url, payload.format_id, payload.download_dir, payload.merge_output_format
+            payload.url,
+            payload.format_id,
+            payload.download_dir,
+            payload.merge_output_format,
+            payload.subtitle_lang,
+            payload.subtitle_auto,
         )
     except TooManyDownloadsError as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from exc

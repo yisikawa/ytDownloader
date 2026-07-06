@@ -73,6 +73,8 @@ def _download_worker(
     format_id: Optional[str],
     output_dir: Path,
     merge_output_format: Optional[str],
+    subtitle_lang: Optional[str],
+    subtitle_auto: bool,
 ) -> None:
     cancel_event = _cancel_events[task_id]
 
@@ -113,6 +115,15 @@ def _download_worker(
         # (e.g. the format list said "mp4"), instead of yt-dlp's own choice of
         # whatever container best fits the codec combination (e.g. webm/mkv).
         ydl_opts["merge_output_format"] = merge_output_format
+    if subtitle_lang:
+        ydl_opts["writesubtitles"] = not subtitle_auto
+        ydl_opts["writeautomaticsub"] = subtitle_auto
+        ydl_opts["subtitleslangs"] = [subtitle_lang]
+        ydl_opts["postprocessors"] = [{
+            "key": "FFmpegEmbedSubtitle",
+            # Delete the standalone subtitle file once it's embedded in the container.
+            "already_have_subtitle": False,
+        }]
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -154,6 +165,8 @@ def start_download(
     format_id: Optional[str],
     download_dir: Optional[str] = None,
     merge_output_format: Optional[str] = None,
+    subtitle_lang: Optional[str] = None,
+    subtitle_auto: bool = False,
 ) -> str:
     _cleanup_stale_tasks()
 
@@ -176,7 +189,7 @@ def start_download(
 
     thread = threading.Thread(
         target=_download_worker,
-        args=(task_id, url, format_id, output_dir, merge_output_format),
+        args=(task_id, url, format_id, output_dir, merge_output_format, subtitle_lang, subtitle_auto),
         daemon=True,
     )
     thread.start()

@@ -6,6 +6,10 @@ const probeArea = document.getElementById('probe-area');
 const thumbnail = document.getElementById('thumbnail');
 const videoTitle = document.getElementById('video-title');
 const formatSelect = document.getElementById('format-select');
+const audioTrackArea = document.getElementById('audio-track-area');
+const audioSelect = document.getElementById('audio-select');
+const subtitleTrackArea = document.getElementById('subtitle-track-area');
+const subtitleSelect = document.getElementById('subtitle-select');
 const downloadDirInput = document.getElementById('download-dir');
 const downloadBtn = document.getElementById('download-btn');
 const progressDiv = document.getElementById('progress');
@@ -15,6 +19,35 @@ const cancelBtn = document.getElementById('cancel-btn');
 const historyList = document.getElementById('history-list');
 
 let currentTask = null;
+
+const LANGUAGE_NAMES = (() => {
+  try {
+    return new Intl.DisplayNames(['ja'], { type: 'language' });
+  } catch (err) {
+    return null;
+  }
+})();
+
+function describeAudioTrack(f, lang) {
+  if (lang !== 'und' && LANGUAGE_NAMES) {
+    try {
+      const name = LANGUAGE_NAMES.of(lang);
+      if (name) return `${name} (${lang})`;
+    } catch (err) {
+      // unknown/invalid language tag; fall through to other labels
+    }
+  }
+  return f.format_note || (lang !== 'und' ? lang : '既定の音声');
+}
+
+function updateAudioTrackVisibility() {
+  const selected = formatSelect.selectedOptions[0];
+  const needsAudio = selected && selected.dataset.needsAudio === 'true';
+  const hasAudioOptions = audioSelect.options.length > 0;
+  audioTrackArea.style.display = needsAudio && hasAudioOptions ? 'block' : 'none';
+}
+
+formatSelect.addEventListener('change', updateAudioTrackVisibility);
 
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -49,11 +82,12 @@ form.addEventListener('submit', async (event) => {
       // the resulting file has no sound.
       const needsAudio = f.has_video && !f.has_audio;
       const label = `${f.format_id} — ${f.ext} — ${f.resolution || ''} — ${f.format_note || ''}` +
-        (needsAudio ? ' (音声を自動合成)' : '');
+        (needsAudio ? ' (音声を別途選択/自動合成)' : '');
       if (!seen.has(f.format_id)) {
         const opt = document.createElement('option');
-        opt.value = needsAudio ? `${f.format_id}+bestaudio` : f.format_id;
+        opt.value = f.format_id;
         opt.textContent = label;
+        opt.dataset.needsAudio = needsAudio ? 'true' : 'false';
         // Forces the merged output into the same container shown in the label
         // (e.g. "mp4"), instead of yt-dlp's own choice of best-fitting container
         // for the codec combination, which can differ (e.g. webm/mkv).
@@ -62,6 +96,43 @@ form.addEventListener('submit', async (event) => {
         seen.add(f.format_id);
       }
     });
+
+    // populate audio tracks: a dubbed video ships one audio-only stream per
+    // language, so users can pick which language to merge with the video.
+    audioSelect.innerHTML = '';
+    const bestPerLanguage = new Map();
+    data.formats
+      .filter(f => f.has_audio && !f.has_video)
+      .forEach(f => {
+        const key = f.language || 'und';
+        const current = bestPerLanguage.get(key);
+        if (!current || (f.tbr || 0) > (current.tbr || 0)) {
+          bestPerLanguage.set(key, f);
+        }
+      });
+    bestPerLanguage.forEach((f, lang) => {
+      const opt = document.createElement('option');
+      opt.value = f.format_id;
+      opt.textContent = describeAudioTrack(f, lang);
+      audioSelect.appendChild(opt);
+    });
+
+    updateAudioTrackVisibility();
+
+    // populate subtitles: embedded as a selectable track in the output file,
+    // not burned into the video image.
+    subtitleSelect.innerHTML = '';
+    const noneOpt = document.createElement('option');
+    noneOpt.value = '';
+    noneOpt.textContent = 'なし';
+    subtitleSelect.appendChild(noneOpt);
+    (data.subtitles || []).forEach(sub => {
+      const opt = document.createElement('option');
+      opt.value = `${sub.auto ? 'auto' : 'manual'}:${sub.lang}`;
+      opt.textContent = sub.name + (sub.auto ? ' (自動生成)' : '');
+      subtitleSelect.appendChild(opt);
+    });
+    subtitleTrackArea.style.display = (data.subtitles || []).length > 0 ? 'block' : 'none';
 
     status.textContent = 'フォーマットを選択してください';
   } catch (err) {
@@ -72,10 +143,25 @@ form.addEventListener('submit', async (event) => {
 
 downloadBtn.addEventListener('click', async () => {
   const url = urlInput.value.trim();
-  const format_id = formatSelect.value || null;
   const download_dir = downloadDirInput.value.trim() || null;
   const selectedOption = formatSelect.selectedOptions[0];
   const merge_output_format = (selectedOption && selectedOption.dataset.ext) || null;
+
+  let format_id = formatSelect.value || null;
+  const needsAudio = selectedOption && selectedOption.dataset.needsAudio === 'true';
+  if (needsAudio) {
+    const audioFormatId = audioTrackArea.style.display !== 'none' && audioSelect.value;
+    format_id = `${format_id}+${audioFormatId || 'bestaudio'}`;
+  }
+
+  let subtitle_lang = null;
+  let subtitle_auto = false;
+  if (subtitleSelect.value) {
+    const [kind, lang] = subtitleSelect.value.split(':');
+    subtitle_lang = lang;
+    subtitle_auto = kind === 'auto';
+  }
+
   status.textContent = 'ダウンロードを開始します...';
   result.innerHTML = '';
 
@@ -83,7 +169,7 @@ downloadBtn.addEventListener('click', async () => {
     const res = await fetch('/api/download', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url, format_id, download_dir, merge_output_format }),
+      body: JSON.stringify({ url, format_id, download_dir, merge_output_format, subtitle_lang, subtitle_auto }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || '開始に失敗しました');

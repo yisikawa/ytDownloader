@@ -12,3 +12,5 @@ class DownloadRequest(BaseModel):
     format_id: Optional[str] = None
     download_dir: Optional[str] = None
     merge_output_format: Optional[str] = None
+    subtitle_lang: Optional[str] = None
+    subtitle_auto: bool = False

@@ -102,6 +102,11 @@ def _download_worker(
         "restrictfilenames": False,
         "progress_hooks": [progress_hook],
         "format": format_id or "bestvideo+bestaudio/best",
+        # YouTube now requires solving JS challenges for many videos; without a JS
+        # runtime + the official EJS solver script, extraction fails with a
+        # spurious "This video is not available" error.
+        "js_runtimes": {"deno": {}, "node": {}},
+        "remote_components": ["ejs:github"],
     }
     if merge_output_format:
         # Forces the merged file into the container the user actually picked

@@ -28,7 +28,16 @@ def probe(payload: ProbeRequest):
     if not payload.url.startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="Please provide a valid http(s) URL.")
 
-    ydl_opts = {"quiet": True, "no_warnings": True, "noplaylist": True}
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        # YouTube now requires solving JS challenges for many videos; without a JS
+        # runtime + the official EJS solver script, extraction fails with a
+        # spurious "This video is not available" error.
+        "js_runtimes": {"deno": {}, "node": {}},
+        "remote_components": ["ejs:github"],
+    }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(payload.url, download=False)

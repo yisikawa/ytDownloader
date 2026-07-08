@@ -53,6 +53,9 @@ def probe(payload: ProbeRequest):
         # spurious "This video is not available" error.
         "js_runtimes": {"deno": {}, "node": {}},
         "remote_components": ["ejs:github"],
+        # The default player clients only expose the original audio track; dubbed
+        # (multi-language) audio tracks are only listed by the web_embedded client.
+        "extractor_args": {"youtube": {"player_client": ["default", "web_embedded"]}},
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:

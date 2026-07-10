@@ -146,63 +146,65 @@ class MainApplicationTests(unittest.TestCase):
         response = self.client.get("/api/files/../../etc/passwd")
         self.assertEqual(response.status_code, 404)
 
-    def test_cleanup_intermediate_files_removes_only_matching_video_id(self) -> None:
-        # Simulates the state of the download folder right after a cancel: this
-        # task's own partial/fragment files should be deleted, but a different
-        # concurrent task's .part file (different video ID) must survive, and so
-        # must an unrelated already-completed file that happens to share this
-        # task's ID (e.g. from an earlier, separate successful download).
+    def test_cleanup_intermediate_files_deletes_only_given_paths(self) -> None:
+        # _cleanup_intermediate_files no longer scans a directory or matches by
+        # video ID: it deletes exactly the paths it's handed, and nothing else -
+        # including files that would have matched the old ID-substring pattern.
         with tempfile.TemporaryDirectory() as tmp_dir:
             output_dir = Path(tmp_dir)
 
-            this_task_files = [
-                "My Video [abc123XYZ_-].f137.mp4.part",
-                "My Video [abc123XYZ_-].f251.webm",
-                "My Video [abc123XYZ_-].mp4.part-Frag3",
-                "My Video [abc123XYZ_-].f137.mp4.ytdl",
-            ]
-            other_task_file = "Other Video [zzz999AAA00].mp4.part"
-            completed_file_same_id = "My Video [abc123XYZ_-].mp4"
-            unrelated_file = "notes.txt"
+            own_part = output_dir / "My Video [abc123XYZ_-].f137.mp4.part"
+            own_part.write_bytes(b"data")
+            not_passed_but_matching_id = output_dir / "My Video [abc123XYZ_-].f251.webm.part"
+            not_passed_but_matching_id.write_bytes(b"data")
+            completed_file_same_id = output_dir / "My Video [abc123XYZ_-].mp4"
+            completed_file_same_id.write_bytes(b"data")
+            missing_path = output_dir / "already-gone.mp4.part"  # never created
 
-            for name in this_task_files + [other_task_file, completed_file_same_id, unrelated_file]:
-                (output_dir / name).write_bytes(b"data")
-
-            downloads._cleanup_intermediate_files(output_dir, "abc123XYZ_-")
+            downloads._cleanup_intermediate_files(
+                [str(own_part), str(missing_path), None, ""]
+            )
 
             remaining = {p.name for p in output_dir.iterdir()}
+            self.assertNotIn(own_part.name, remaining, "the given path should have been deleted")
+            self.assertIn(
+                not_passed_but_matching_id.name,
+                remaining,
+                "a file not in the given paths must survive, even if its name matches by ID",
+            )
+            self.assertIn(completed_file_same_id.name, remaining)
 
-            for name in this_task_files:
-                self.assertNotIn(name, remaining, f"{name} should have been deleted")
-            self.assertIn(other_task_file, remaining)
-            self.assertIn(completed_file_same_id, remaining)
-            self.assertIn(unrelated_file, remaining)
-
-    def test_cleanup_intermediate_files_noop_without_video_id(self) -> None:
+    def test_cleanup_intermediate_files_noop_with_empty_iterable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             output_dir = Path(tmp_dir)
-            (output_dir / "Some Video [abc].mp4.part").write_bytes(b"data")
+            survivor = output_dir / "Some Video [abc].mp4.part"
+            survivor.write_bytes(b"data")
 
-            downloads._cleanup_intermediate_files(output_dir, None)
+            downloads._cleanup_intermediate_files([])
 
             remaining = {p.name for p in output_dir.iterdir()}
-            self.assertIn("Some Video [abc].mp4.part", remaining)
+            self.assertIn(survivor.name, remaining)
 
     def test_download_worker_cancellation_cleans_up_intermediate_files(self) -> None:
-        # End-to-end through _download_worker: a progress_hook call that observes
-        # info_dict (yt-dlp always attaches this, see downloader/common.py
-        # FileDownloader._hook_progress) captures the video ID, then a cancel
-        # request raises DownloadCancelledByUser out of extract_info, and the
-        # except-block cleanup should remove this task's partial files while
-        # leaving a concurrent task's same-directory .part file untouched.
+        # End-to-end through _download_worker: progress_hook calls report this
+        # task's own tmpfilename/filename (as yt-dlp's downloader modules do for
+        # every downloading/finished hook call - see downloader/http.py and
+        # downloader/fragment.py), which get recorded into observed_files. A
+        # cancel request then raises DownloadCancelledByUser out of
+        # extract_info, and the except-block cleanup removes exactly those
+        # observed paths (including the derived .ytdl sidecar) while leaving an
+        # unrelated concurrent task's same-directory .part file (a different
+        # video, never reported to this task's hook) untouched.
         task_id = "cancel-cleanup-task"
         with tempfile.TemporaryDirectory() as tmp_dir:
             output_dir = Path(tmp_dir)
             downloads.DOWNLOADS[task_id] = {"status": "downloading", "url": "https://x"}
             downloads._cancel_events[task_id] = threading.Event()
 
-            own_part = output_dir / "My Video [vid12345678].f137.mp4.part"
-            own_part.write_bytes(b"partial")
+            own_tmpfilename = output_dir / "My Video [vid12345678].f137.mp4.part"
+            own_tmpfilename.write_bytes(b"partial")
+            own_ytdl_sidecar = output_dir / "My Video [vid12345678].f137.mp4.ytdl"
+            own_ytdl_sidecar.write_bytes(b"{}")
             other_part = output_dir / "Concurrent Video [other999999].f137.mp4.part"
             other_part.write_bytes(b"partial")
 
@@ -214,6 +216,8 @@ class MainApplicationTests(unittest.TestCase):
                     hook({
                         "status": "downloading",
                         "downloaded_bytes": 100,
+                        "tmpfilename": str(own_tmpfilename),
+                        "filename": str(own_tmpfilename)[: -len(".part")],
                         "info_dict": {"id": "vid12345678", "title": "My Video"},
                     })
                 raise AssertionError("extract_info should not return normally")
@@ -223,8 +227,59 @@ class MainApplicationTests(unittest.TestCase):
 
             status = downloads.get_status(task_id)
             self.assertEqual(status["status"], "canceled")
-            self.assertFalse(own_part.exists(), "this task's partial file should be deleted")
+            self.assertFalse(own_tmpfilename.exists(), "this task's own tmpfilename should be deleted")
+            self.assertFalse(own_ytdl_sidecar.exists(), "the derived .ytdl sidecar should be deleted")
             self.assertTrue(other_part.exists(), "concurrent task's partial file must survive")
+
+    def test_download_worker_cancellation_same_video_id_spares_other_tasks_files(self) -> None:
+        # The critical scenario this redesign fixes: two tasks downloading the
+        # SAME video concurrently (e.g. a double-click, or two browser tabs)
+        # both embed the same "[video_id]" marker in their filenames, since
+        # outtmpl includes "%(id)s". Under the old ID-substring-scan design,
+        # cancelling task A would have deleted task B's in-progress file too
+        # (same ID, same intermediate suffix). With path tracking, task A's
+        # cleanup only ever touches paths ITS OWN hook observed, so task B's
+        # file survives even though it matches the ID marker.
+        task_a = "task-a-same-video"
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            output_dir = Path(tmp_dir)
+            downloads.DOWNLOADS[task_a] = {"status": "downloading", "url": "https://x"}
+            downloads._cancel_events[task_a] = threading.Event()
+
+            # Task A is downloading the video-only stream...
+            task_a_part = output_dir / "Same Video [dupVID000001].f137.mp4.part"
+            task_a_part.write_bytes(b"partial-a")
+            # ...while task B (a separate, still-running task/thread, never
+            # passed to this call) is downloading the audio-only stream of the
+            # very same video ID. This file would match the old marker-based
+            # scan too, but task A's hook never saw it.
+            task_b_part = output_dir / "Same Video [dupVID000001].f251.webm.part"
+            task_b_part.write_bytes(b"partial-b")
+
+            def fake_extract_info(self, url, download=True):
+                downloads._cancel_events[task_a].set()
+                for hook in self.params["progress_hooks"]:
+                    hook({
+                        "status": "downloading",
+                        "downloaded_bytes": 50,
+                        "tmpfilename": str(task_a_part),
+                        "filename": str(task_a_part)[: -len(".part")],
+                        "info_dict": {"id": "dupVID000001", "title": "Same Video"},
+                    })
+                raise AssertionError("extract_info should not return normally")
+
+            with patch.object(yt_dlp.YoutubeDL, "extract_info", fake_extract_info):
+                downloads._download_worker(
+                    task_a, "https://example.com/watch?v=dupVID000001", None, output_dir, None, None, False
+                )
+
+            status = downloads.get_status(task_a)
+            self.assertEqual(status["status"], "canceled")
+            self.assertFalse(task_a_part.exists(), "task A's own observed file should be deleted")
+            self.assertTrue(
+                task_b_part.exists(),
+                "task B's file must survive cancellation of task A, even though it shares the same video ID",
+            )
 
 
 if __name__ == "__main__":

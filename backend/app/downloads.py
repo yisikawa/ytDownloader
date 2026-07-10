@@ -123,9 +123,9 @@ def _download_worker(
     cancel_event = _cancel_events[task_id]
     # Every intermediate (not-yet-finished-merging) file path this task's own
     # hook calls have reported, so a cancellation can delete exactly this
-    # task's own leftovers (see _cleanup_intermediate_files) without ever
-    # touching another task's files - including another task downloading the
-    # very same video ID concurrently.
+    # task's own leftovers (see _cleanup_intermediate_files for the known
+    # limitation when another task is downloading the identical video with
+    # the identical format).
     observed_files: Set[str] = set()
 
     def progress_hook(d):

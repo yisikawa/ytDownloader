@@ -8,8 +8,8 @@ from typing import Dict, Iterable, List, Optional, Set
 import yt_dlp
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-DOWNLOAD_DIR = BASE_DIR / "downloads"
-DOWNLOAD_DIR.mkdir(exist_ok=True)
+DOWNLOAD_DIR = Path(r"D:\YouTube")
+DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 MAX_CONCURRENT_DOWNLOADS = 3
 TASK_TTL_SECONDS = 60 * 60  # purge finished tasks after 1 hour

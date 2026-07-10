@@ -175,6 +175,8 @@ downloadBtn.addEventListener('click', async () => {
     if (!res.ok) throw new Error(data.detail || '開始に失敗しました');
 
     currentTask = data.task_id;
+    progressBar.value = 0;
+    progressText.textContent = '';
     progressDiv.style.display = 'block';
     cancelBtn.disabled = false;
     pollStatus(currentTask);

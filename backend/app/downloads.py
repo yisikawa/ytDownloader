@@ -210,7 +210,10 @@ def cancel_download(task_id: str) -> bool:
         status = DOWNLOADS.get(task_id)
         if status is None or status.get("status") in TERMINAL_STATUSES:
             return False
-    _cancel_events[task_id].set()
+        event = _cancel_events.get(task_id)
+    if event is None:
+        return False
+    event.set()
     return True
 
 

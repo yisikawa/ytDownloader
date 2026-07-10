@@ -75,6 +75,15 @@ class MainApplicationTests(unittest.TestCase):
         response = self.client.post("/api/cancel/t1")
         self.assertEqual(response.status_code, 409)
 
+    def test_cancel_download_returns_false_when_event_missing(self) -> None:
+        # Simulate race condition: task in DOWNLOADS but event was popped from _cancel_events
+        # (as would happen if the download finished between cancel_download's status check
+        # and its attempt to access the event)
+        downloads.DOWNLOADS["t2"] = {"status": "downloading", "url": "https://x"}
+        # Intentionally do NOT add an entry to _cancel_events to simulate the race
+        result = downloads.cancel_download("t2")
+        self.assertFalse(result)
+
     def test_history_only_includes_terminal_tasks(self) -> None:
         downloads.DOWNLOADS["running"] = {"status": "downloading", "url": "https://a"}
         downloads.DOWNLOADS["done"] = {

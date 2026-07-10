@@ -218,9 +218,19 @@ async function pollStatus(taskId) {
       progressBar.value = 100;
       progressText.textContent = '100%';
       cancelBtn.disabled = true;
-      result.innerHTML = `<p><strong>${data.title || ''}</strong></p>` +
-        `<p>保存先: ${data.download_dir || ''}</p>` +
-        `<a href="/api/files/task/${taskId}" target="_blank" rel="noopener noreferrer">ファイルを開く</a>`;
+      result.innerHTML = '';
+      const titleP = document.createElement('p');
+      const strong = document.createElement('strong');
+      strong.textContent = data.title || '';
+      titleP.appendChild(strong);
+      const dirP = document.createElement('p');
+      dirP.textContent = `保存先: ${data.download_dir || ''}`;
+      const link = document.createElement('a');
+      link.href = `/api/files/task/${taskId}`;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.textContent = 'ファイルを開く';
+      result.append(titleP, dirP, link);
       loadHistory();
       return;
     } else if (data.status === 'canceled') {
@@ -253,8 +263,15 @@ async function loadHistory() {
     data.forEach(entry => {
       const li = document.createElement('li');
       if (entry.status === 'completed' && entry.file_path) {
-        const dir = entry.download_dir ? ` (${entry.download_dir})` : '';
-        li.innerHTML = `<a href="/api/files/task/${entry.task_id}" target="_blank" rel="noopener noreferrer">${entry.title || entry.filename}</a>${dir}`;
+        const link = document.createElement('a');
+        link.href = `/api/files/task/${entry.task_id}`;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.textContent = entry.title || entry.filename || '';
+        li.appendChild(link);
+        if (entry.download_dir) {
+          li.appendChild(document.createTextNode(` (${entry.download_dir})`));
+        }
       } else if (entry.status === 'error') {
         li.textContent = `${entry.url} — エラー: ${entry.error || '不明'}`;
       } else {

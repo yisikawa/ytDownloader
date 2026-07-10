@@ -194,12 +194,22 @@ cancelBtn.addEventListener('click', async () => {
   }
 });
 
-async function pollStatus(taskId) {
+async function pollStatus(taskId, failCount = 0) {
   try {
     const res = await fetch(`/api/status/${taskId}`);
+
+    // Handle 404 immediately - task not found, don't retry
+    if (res.status === 404) {
+      status.textContent = 'エラー';
+      result.textContent = 'タスクが見つかりません';
+      cancelBtn.disabled = true;
+      return;
+    }
+
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || 'ステータス取得エラー');
 
+    // Success - process status update and reschedule with failCount reset
     if (data.status === 'queued') {
       status.textContent = 'キューに登録されました';
     } else if (data.status === 'downloading') {
@@ -248,8 +258,16 @@ async function pollStatus(taskId) {
 
     setTimeout(() => pollStatus(taskId), 1000);
   } catch (err) {
+    // Network error or HTTP error (not 404)
+    if (failCount < 5) {
+      // Retry with exponential backoff (2 seconds)
+      setTimeout(() => pollStatus(taskId, failCount + 1), 2000);
+      return;
+    }
+    // Max retries exceeded - show error and stop polling
     status.textContent = 'ステータス取得エラー';
-    result.textContent = err.message || String(err);
+    result.textContent = 'ネットワークエラー: 最大再試行回数に達しました';
+    cancelBtn.disabled = true;
   }
 }
 

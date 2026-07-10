@@ -9,3 +9,6 @@ backend/.venv/
 # Downloaded media (runtime output, not source)
 backend/downloads/*
 !backend/downloads/.gitkeep
+
+# Subagent-driven-development scratch workspace
+.superpowers/

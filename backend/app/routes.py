@@ -60,6 +60,8 @@ def probe(payload: ProbeRequest):
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(payload.url, download=False)
+    except yt_dlp.utils.DownloadError as exc:
+        raise HTTPException(status_code=422, detail=f"Probe failed: {exc}") from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Probe failed: {exc}") from exc
 

@@ -41,6 +41,13 @@ class MainApplicationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 500)
         self.assertIn("boom", response.json()["detail"])
 
+    def test_probe_download_error_returns_422(self) -> None:
+        with patch("app.routes.yt_dlp.YoutubeDL") as mock_ydl:
+            mock_ydl.return_value.__enter__.return_value.extract_info.side_effect = yt_dlp.utils.DownloadError("Video not available")
+            response = self.client.post("/api/probe", json={"url": "https://example.com/watch?v=abc"})
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("Video not available", response.json()["detail"])
+
     def test_probe_flags_video_only_formats_and_drops_storyboards(self) -> None:
         fake_info = {
             "id": "abc",

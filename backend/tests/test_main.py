@@ -1,10 +1,12 @@
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import yt_dlp
 from fastapi.testclient import TestClient
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -143,6 +145,86 @@ class MainApplicationTests(unittest.TestCase):
         # denies it (404) before our handler runs — also a safe outcome.
         response = self.client.get("/api/files/../../etc/passwd")
         self.assertEqual(response.status_code, 404)
+
+    def test_cleanup_intermediate_files_removes_only_matching_video_id(self) -> None:
+        # Simulates the state of the download folder right after a cancel: this
+        # task's own partial/fragment files should be deleted, but a different
+        # concurrent task's .part file (different video ID) must survive, and so
+        # must an unrelated already-completed file that happens to share this
+        # task's ID (e.g. from an earlier, separate successful download).
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            output_dir = Path(tmp_dir)
+
+            this_task_files = [
+                "My Video [abc123XYZ_-].f137.mp4.part",
+                "My Video [abc123XYZ_-].f251.webm",
+                "My Video [abc123XYZ_-].mp4.part-Frag3",
+                "My Video [abc123XYZ_-].f137.mp4.ytdl",
+            ]
+            other_task_file = "Other Video [zzz999AAA00].mp4.part"
+            completed_file_same_id = "My Video [abc123XYZ_-].mp4"
+            unrelated_file = "notes.txt"
+
+            for name in this_task_files + [other_task_file, completed_file_same_id, unrelated_file]:
+                (output_dir / name).write_bytes(b"data")
+
+            downloads._cleanup_intermediate_files(output_dir, "abc123XYZ_-")
+
+            remaining = {p.name for p in output_dir.iterdir()}
+
+            for name in this_task_files:
+                self.assertNotIn(name, remaining, f"{name} should have been deleted")
+            self.assertIn(other_task_file, remaining)
+            self.assertIn(completed_file_same_id, remaining)
+            self.assertIn(unrelated_file, remaining)
+
+    def test_cleanup_intermediate_files_noop_without_video_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            output_dir = Path(tmp_dir)
+            (output_dir / "Some Video [abc].mp4.part").write_bytes(b"data")
+
+            downloads._cleanup_intermediate_files(output_dir, None)
+
+            remaining = {p.name for p in output_dir.iterdir()}
+            self.assertIn("Some Video [abc].mp4.part", remaining)
+
+    def test_download_worker_cancellation_cleans_up_intermediate_files(self) -> None:
+        # End-to-end through _download_worker: a progress_hook call that observes
+        # info_dict (yt-dlp always attaches this, see downloader/common.py
+        # FileDownloader._hook_progress) captures the video ID, then a cancel
+        # request raises DownloadCancelledByUser out of extract_info, and the
+        # except-block cleanup should remove this task's partial files while
+        # leaving a concurrent task's same-directory .part file untouched.
+        task_id = "cancel-cleanup-task"
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            output_dir = Path(tmp_dir)
+            downloads.DOWNLOADS[task_id] = {"status": "downloading", "url": "https://x"}
+            downloads._cancel_events[task_id] = threading.Event()
+
+            own_part = output_dir / "My Video [vid12345678].f137.mp4.part"
+            own_part.write_bytes(b"partial")
+            other_part = output_dir / "Concurrent Video [other999999].f137.mp4.part"
+            other_part.write_bytes(b"partial")
+
+            def fake_extract_info(self, url, download=True):
+                # Emulate yt-dlp invoking the progress hook mid-download, then
+                # the user cancelling before the download completes.
+                downloads._cancel_events[task_id].set()
+                for hook in self.params["progress_hooks"]:
+                    hook({
+                        "status": "downloading",
+                        "downloaded_bytes": 100,
+                        "info_dict": {"id": "vid12345678", "title": "My Video"},
+                    })
+                raise AssertionError("extract_info should not return normally")
+
+            with patch.object(yt_dlp.YoutubeDL, "extract_info", fake_extract_info):
+                downloads._download_worker(task_id, "https://example.com/watch?v=vid12345678", None, output_dir, None, None, False)
+
+            status = downloads.get_status(task_id)
+            self.assertEqual(status["status"], "canceled")
+            self.assertFalse(own_part.exists(), "this task's partial file should be deleted")
+            self.assertTrue(other_part.exists(), "concurrent task's partial file must survive")
 
 
 if __name__ == "__main__":

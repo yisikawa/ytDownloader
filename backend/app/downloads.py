@@ -1,3 +1,4 @@
+import re
 import threading
 import time
 import uuid
@@ -31,6 +32,44 @@ class InvalidDownloadDirError(Exception):
 
 class DownloadCancelledByUser(Exception):
     pass
+
+
+# Matches the suffixes yt-dlp appends to its outtmpl-derived filename while a
+# download is still in progress:
+#   "....mp4.part"            - a single-stream (or already-merged) download in flight
+#   "....mp4.part-Frag12"     - one fragment of a DASH/HLS fragmented download
+#   "....f137.mp4"            - a finished-but-not-yet-merged video/audio stream
+#   "....f137.mp4.part"       - that same stream, still downloading
+#   "....f137.mp4.ytdl"       - yt-dlp's fragment-resume metadata sidecar
+_INTERMEDIATE_FILE_SUFFIX_RE = re.compile(r"\.part(-Frag\d+)?$|\.f\d+\.[^./\\]+$|\.ytdl$")
+
+
+def _cleanup_intermediate_files(output_dir: Path, video_id: Optional[str]) -> None:
+    """Delete leftover intermediate download files for a single cancelled task.
+
+    Files are matched by the literal "[video_id]" marker that outtmpl embeds in
+    every filename it produces, so concurrent downloads of other videos (which
+    carry a different ID) are never touched. Only known intermediate-file
+    suffixes are removed; a fully merged/completed output file is left alone.
+    """
+    if not video_id:
+        return
+    marker = f"[{video_id}]"
+    try:
+        candidates = list(output_dir.iterdir())
+    except OSError:
+        return
+    for path in candidates:
+        name = path.name
+        if marker not in name:
+            continue
+        if not _INTERMEDIATE_FILE_SUFFIX_RE.search(name):
+            continue
+        try:
+            if path.is_file():
+                path.unlink()
+        except OSError:
+            pass
 
 
 def _resolve_download_dir(download_dir: Optional[str]) -> Path:
@@ -72,8 +111,16 @@ def _download_worker(
     subtitle_auto: bool,
 ) -> None:
     cancel_event = _cancel_events[task_id]
+    # Populated from the progress hook's info_dict as soon as yt-dlp starts
+    # downloading, so the cancel handler below knows which files belong to
+    # this task (see _cleanup_intermediate_files).
+    download_state: Dict[str, Optional[str]] = {"video_id": None}
 
     def progress_hook(d):
+        info_dict = d.get("info_dict") or {}
+        video_id = info_dict.get("id")
+        if video_id:
+            download_state["video_id"] = video_id
         if cancel_event.is_set():
             raise DownloadCancelledByUser("Download canceled by user")
         with _lock:
@@ -88,9 +135,12 @@ def _download_worker(
 
     ydl_opts = {
         # Use the video title (truncated to avoid Windows path-length issues) as the
-        # filename. Note: same-titled videos, or the same video in a different
-        # format, will overwrite an existing file with the same title.
-        "outtmpl": str(output_dir / "%(title).150B.%(ext)s"),
+        # filename, with the video ID appended so intermediate files (.part,
+        # .fNNN.*) can be safely identified and cleaned up if the download is
+        # canceled, without touching other concurrent tasks' files. Note:
+        # re-downloading the same video will overwrite an existing file with
+        # the same title+ID.
+        "outtmpl": str(output_dir / "%(title).150B [%(id)s].%(ext)s"),
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
@@ -144,6 +194,7 @@ def _download_worker(
                 status["file_path"] = str(file_path) if file_path else None
                 status["finished_at"] = time.monotonic()
     except DownloadCancelledByUser:
+        _cleanup_intermediate_files(output_dir, download_state["video_id"])
         with _lock:
             status = DOWNLOADS[task_id]
             status["status"] = "canceled"

@@ -62,11 +62,6 @@ def _cleanup_stale_tasks() -> None:
             _cancel_events.pop(task_id, None)
 
 
-def _active_download_count() -> int:
-    with _lock:
-        return sum(1 for status in DOWNLOADS.values() if status.get("status") in ACTIVE_STATUSES)
-
-
 def _download_worker(
     task_id: str,
     url: str,
@@ -172,16 +167,15 @@ def start_download(
     subtitle_auto: bool = False,
 ) -> str:
     _cleanup_stale_tasks()
-
-    if _active_download_count() >= MAX_CONCURRENT_DOWNLOADS:
-        raise TooManyDownloadsError(
-            f"Too many concurrent downloads (max {MAX_CONCURRENT_DOWNLOADS}). Please try again later."
-        )
-
     output_dir = _resolve_download_dir(download_dir)
 
     task_id = str(uuid.uuid4())
     with _lock:
+        active = sum(1 for s in DOWNLOADS.values() if s.get("status") in ACTIVE_STATUSES)
+        if active >= MAX_CONCURRENT_DOWNLOADS:
+            raise TooManyDownloadsError(
+                f"Too many concurrent downloads (max {MAX_CONCURRENT_DOWNLOADS}). Please try again later."
+            )
         DOWNLOADS[task_id] = {
             "status": "queued",
             "url": url,

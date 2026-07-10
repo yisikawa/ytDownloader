@@ -58,11 +58,18 @@ def _cleanup_intermediate_files(paths: Iterable[Optional[str]]) -> None:
     progress_hook closure actually observed during its own download (see
     _download_worker). Because each task runs its own YoutubeDL instance/
     thread with its own hook closure, those paths are inherently scoped to
-    that one task - unlike matching by a "[video_id]" substring, this can
-    never delete a file that belongs to a *different* task's in-progress
-    download of the same video (e.g. the user double-clicked download, or has
-    two tabs open), and it doesn't rely on any assumption about which
-    characters a site's video IDs may contain.
+    that one task - unlike matching by a "[video_id]" substring, this design
+    avoids directory-wide scanning and does not rely on any assumption about
+    which characters a site's video IDs may contain.
+
+    Known limitation: if two tasks download the exact same video with the
+    exact same format (same outtmpl resolution), they will resolve to an
+    identical tmpfilename. In this case (e.g. duplicate concurrent requests,
+    or same video+format across multiple browser tabs), canceling one task's
+    download would also delete the in-progress file of the other task. The
+    app currently has no dedup guard to prevent this (see start_download).
+    This is a narrow, accepted limitation similar to the -FragN fragment-file
+    limitation noted elsewhere.
     """
     for raw_path in paths:
         if not raw_path:

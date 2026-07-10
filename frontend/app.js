@@ -47,7 +47,30 @@ function updateAudioTrackVisibility() {
   audioTrackArea.style.display = needsAudio && hasAudioOptions ? 'block' : 'none';
 }
 
-formatSelect.addEventListener('change', updateAudioTrackVisibility);
+function updateSubtitleTrackVisibility() {
+  const selected = formatSelect.selectedOptions[0];
+  // Subtitle embedding requires a video stream in the output container;
+  // audio-only formats (e.g. m4a) can't hold an embedded subtitle track,
+  // and attempting it fails the download task after the file already
+  // downloaded successfully.
+  const hasVideo = selected && selected.dataset.hasVideo === 'true';
+  // The first option is always the "なし" placeholder, so more than one
+  // option means at least one real subtitle is available.
+  const hasSubtitles = subtitleSelect.options.length > 1;
+  if (hasSubtitles && hasVideo) {
+    subtitleTrackArea.style.display = 'block';
+  } else {
+    subtitleTrackArea.style.display = 'none';
+    subtitleSelect.value = '';
+  }
+}
+
+function updateFormatDependentVisibility() {
+  updateAudioTrackVisibility();
+  updateSubtitleTrackVisibility();
+}
+
+formatSelect.addEventListener('change', updateFormatDependentVisibility);
 
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -88,6 +111,7 @@ form.addEventListener('submit', async (event) => {
         opt.value = f.format_id;
         opt.textContent = label;
         opt.dataset.needsAudio = needsAudio ? 'true' : 'false';
+        opt.dataset.hasVideo = f.has_video ? 'true' : 'false';
         // Forces the merged output into the same container shown in the label
         // (e.g. "mp4"), instead of yt-dlp's own choice of best-fitting container
         // for the codec combination, which can differ (e.g. webm/mkv).
@@ -117,8 +141,6 @@ form.addEventListener('submit', async (event) => {
       audioSelect.appendChild(opt);
     });
 
-    updateAudioTrackVisibility();
-
     // populate subtitles: embedded as a selectable track in the output file,
     // not burned into the video image.
     subtitleSelect.innerHTML = '';
@@ -132,7 +154,8 @@ form.addEventListener('submit', async (event) => {
       opt.textContent = sub.name + (sub.auto ? ' (自動生成)' : '');
       subtitleSelect.appendChild(opt);
     });
-    subtitleTrackArea.style.display = (data.subtitles || []).length > 0 ? 'block' : 'none';
+
+    updateFormatDependentVisibility();
 
     status.textContent = 'フォーマットを選択してください';
   } catch (err) {
